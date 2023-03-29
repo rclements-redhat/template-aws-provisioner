@@ -1,0 +1,6 @@
+---
+- name: Test for role
+- hosts: localhost
+  remote_user: root
+  roles:
+    - aws_get_infra_info

@@ -1,0 +1,4 @@
+---
+name: Provision AWS infrastructure
+hosts: localhost
+

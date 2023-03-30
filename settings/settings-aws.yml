@@ -1,0 +1,81 @@
+#############################################################################
+# Author: Ryan Clements, Red Hat Inc.
+# Email: rclement@redhat.com
+# Date: March 29/2023
+#############################################################################
+#
+# This is the AWS settings file for my infrastructure all-Ansible provisioner.
+#
+# > MANDATORY
+# [use_personal_ip_for_sg] [true/false]
+# If true:
+#   - The ansible script will attempt to find your public IP at the beginning
+#     of the provisioning stage. It will then use your personal IP to insert
+#     into any security group rules where "_MY_IP_" is specified.
+# If false:
+#   - Then you must have the alternative_security_ip set to an IP you want the
+#     security groups to to allow ingress traffic. If it is not set, then the
+#     provisioning script error out on purpose for security reasons.
+use_personal_ip_for_sg: "{{ true | mandatory }}"
+
+# > MAY OMIT
+# alternative_security_ip [##.##.##.##/##]
+# ONLY used when: [use_personal_ip_for_sg] is [false]
+#   If this is set to a false when [use_personal_ip_for_sg] is [false], then it
+#   will use this IP for the ingress points on the security groups where
+#   "_MY_IP_" is specified.
+# WHY?
+#   The reason this exists is to quickly change the "_MY_IP_" IP address for
+#   testing, but not have to go edit all the route tables below.
+alternative_security_ip: "0.0.0.0/0"
+
+# Define the AWS infrastructure you want to build, using YAML. The provisioner
+# will do the rest.
+#
+# Group everything under other AWS services so they are associated.
+#
+# Example, a VPC wouldn't exist with a region, a subnet needs to be tied to a
+# VPC, and so on.
+#
+aws:
+  region:
+    - name: us-east-1
+      vpc:
+        name: &default_vpc_name default
+        tenancy: default
+        cidr_block: &vpc_cidr 10.0.0.0/16
+        tags:
+          Name: *default_vpc_name
+        subnet:
+          - name: &int_subnet_name internal
+            cidr: &int_subnet_cidr 10.0.0.0/24
+            tags:
+              Name: *int_subnet_name
+            rtb:
+              - name: &default_rtb_name default
+                igw: # _IGW_
+                  name: &igw_name
+                  tags:
+                    Name: *igw_name
+                routes: []
+                subnets:
+                  - *int_subnet_name
+                tags:
+                  Name: *default_rtb_name
+            sg:
+              # Use _MY_IP_ anywhere to have the provisioning infrastructure
+              # stage to insert your personal IP into the security groups
+              # However, the use_personal_ip_for_sg variable at the top of this
+              # settings file must be true. If it's not true, and you have
+              # _MY_IP_ in the route tables, then alternative_security_ip
+              # must be set. If that's not set, then the provision script will
+              # throw an error on purpose for security reasons.
+              - name: &int_sg_name internal
+                description: Internal security group
+                rules:
+                  - proto: tcp
+                    ports: 22
+                    cidr_ip: _MY_IP_
+                tags:
+                  Name: *int_sg_name
+                ec2:

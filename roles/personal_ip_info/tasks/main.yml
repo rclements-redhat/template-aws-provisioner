@@ -1,0 +1,16 @@
+---
+# tasks file for personal_ip_info
+- name: Get personal public IP
+  ansible.builtin.uri:
+    url: "{{ url.https.find_public_ip }}"
+    return_content: true
+  register: my_ip_info
+
+- name: Set personal public IP fact
+  ansible.builtin.set_fact:
+    personal_ip_info:
+      ip: "{{ my_ip_info.content }}{{ cidr_format | ternary('/32', '') }}"
+
+- name: Display personal public IP
+  ansible.builtin.debug:
+    msg: "Detected personal public IP is: {{ personal_ip_info.ip }}"

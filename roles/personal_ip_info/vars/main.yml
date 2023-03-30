@@ -1,0 +1,3 @@
+---
+# vars file for personal_ip_info
+cidr_format: true

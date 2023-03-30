@@ -1,0 +1,22 @@
+---
+# tasks file for aws-get-infra-info
+- name: Get vpc information
+  ansible.builtin.include_tasks: aws_get_vpc.yml
+
+- name: Print
+  ansible.builtin.debug:
+    var: subnets
+
+- name: Get requested subnet information
+  ansible.builtin.include_tasks: aws_get_subnet_info.yml
+  when: subnets is defined and subnets|length > 0
+
+- name: Get requested security group information
+  ansible.builtin.include_tasks: aws_get_sg_info.yml
+  when: security_groups is defined and security_groups|length > 0
+
+- name: Create main structure
+  ansible.builtin.set_fact:
+    aws_info:
+      subnets: "{{ aws_get_infra_info_subnets | default(omit) }}"
+      sgs: "{{ aws_get_infra_info_sgs | default(omit) }}"

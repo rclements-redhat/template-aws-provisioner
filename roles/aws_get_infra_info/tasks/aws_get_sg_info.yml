@@ -1,0 +1,70 @@
+---
+### Get AWS Security Groups
+#
+# Author : Ryan Clements
+# Email  : rclement@redhat.com
+# Company: Red Hat Inc.
+#
+# DESCRIPTION:
+#
+# The goal of this task list is to return a list of security groups that
+# the role requests in the 'security_groups' fact. For instance, if
+# 'internal' is in the 'security_groups' fact, then only return the 'internal'
+# sg information.
+#
+# It accomplishes this by retrieving all sgs from AWS that have a tag Project
+# matching the Project tag's value in ../settings/settings-general.yml and then:
+#
+#   - Generate a list of sgs using the new names as keys and associates it
+#     with the corresponding sg dictionary
+#   - Compile a list of sgs from the 'security_groups' variable that was
+#     provided to the role
+#   - The resulting list of sgs is stored in the 'agii_sgs'
+#     fact.
+#
+# Variables are prefixed with 'agii_' , short for 'aws_get_infra_info_' for ease
+# of use and reading.
+#
+# Query AWS for all sgs with tag:Project value from aws.project_ref
+- name: Get AWS security groups
+  delegate_to: localhost
+  amazon.aws.ec2_security_group_info:
+    filters:
+      "tag:Project": "{{ aws.project_ref }}"
+    aws_access_key: "{{ my_aws_access_key }}" # extra_vars override from AAP
+    aws_secret_key: "{{ my_aws_secret_key }}" # extra_vars override from AAP
+    region: "{{ demo_region }}" # extra_vars will override from AAP Credential
+  register: agii_sg_id_info
+
+# noqa jinja[invalid]
+# Get a list of all sg tag:Type
+- name: Build security group list
+  ansible.builtin.set_fact: # noqa jinja[invalid]
+    agii_sg_id_info_mod: "{{
+        agii_sg_id_info |
+        json_query('security_groups[*].tags.Type')
+      }}"
+
+- name: Create the intersected list # noqa jinja[invalid]
+  ansible.builtin.set_fact: # noqa jinja[invalid]
+    agii_sg_intersected_list: # noqa jinja[invalid]
+      "{{
+        agii_sg_id_info_mod |
+        intersect(security_groups | json_query('[*].tags.Type'))
+      }}"
+
+# Generate a final sg list based on the sgs requested in 'security_groups'
+# variable. This is sort of hacky, but I couldn't figure out a less complex
+# way to accomplish this. If you know of a simplier way, please create a PR!
+- name: Generate final pruned security group list
+  when: aws_get_infra_info_item.0 in agii_sg_intersected_list
+  ansible.builtin.set_fact:
+    aws_get_infra_info_sgs: "{{
+            [{aws_get_infra_info_item.0: aws_get_infra_info_item.1}] |
+            combine(aws_get_infra_info_sgs | default([]))
+          }}"
+  with_together:
+    - "{{ agii_sg_id_info_mod }}"
+    - "{{ agii_sg_id_info.security_groups }}"
+  loop_control:
+    loop_var: aws_get_infra_info_item

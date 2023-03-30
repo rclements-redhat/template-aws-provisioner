@@ -1,0 +1,71 @@
+---
+### Get AWS Subnets
+#
+# Author : Ryan Clements
+# Email  : rclement@redhat.com
+# Company: Red Hat Inc.
+#
+# DESCRIPTION:
+#
+# The goal of this task list is to return a list of subnets that the role
+# requests in the 'subnets' fact. For instance, if 'internal' is in the
+# 'subnets' fact, then only return the 'internal' subnet information.
+#
+# It accomplishes this by retrieving all subnets from AWS that have a tag
+# Project matching the Project tag's value in ../settings/settings-general.yml
+# and then:
+#
+#   - Generate a list of sgs using the new names as keys and associates it
+#     with the corresponding sg dictionary
+#   - Compile a list of subnets from the 'subnets' variable that was
+#     provided to the role
+#   - The resulting list of sgs is stored in the 'agii_sgs'
+#     fact.
+#
+# Variables are prefixed with 'agii_' , short for 'aws_get_infra_info_' for ease
+# of use and reading.
+#
+# Query AWS for all subnets with tag:Project value from aws.project_ref
+- name: Get AWS subnets
+  delegate_to: localhost
+  amazon.aws.ec2_vpc_subnet_info:
+    filters:
+      "tag:Project": "{{ aws.project_ref }}"
+    aws_access_key: "{{ my_aws_access_key }}" # extra_vars override from AAP
+    aws_secret_key: "{{ my_aws_secret_key }}" # extra_vars override from AAP
+    region: "{{ demo_region }}" # extra_vars will override from AAP Credential
+  register: agii_subnet_id_info
+
+
+# Get a list of all subnet tag:Type
+- name: Build subnet list # noqa jinja[invalid]
+  ansible.builtin.set_fact:
+    agii_subnet_id_info_mod: # noqa jinja[invalid]
+      "{{
+        agii_subnet_id_info |
+        json_query('subnets[*].tags.Type')
+      }}"
+
+- name: Create the intersected list # noqa jinja[invalid]
+  ansible.builtin.set_fact: # noqa jinja[invalid]
+    agii_subnet_intersected_list: # noqa jinja[invalid]
+      "{{
+        agii_subnet_id_info_mod |
+        intersect(subnets | json_query('[*].tags.Type'))
+      }}"
+
+# Generate a final subnet list based on the subnets requested in 'subnets'
+# variable. This is sort of hacky, but I couldn't figure out a less complex
+# way to accomplish this. If you know of a simplier way, please create a PR!
+- name: Generate final pruned subnet list
+  when: aws_get_infra_info_item.0 in agii_subnet_intersected_list
+  ansible.builtin.set_fact:
+    aws_get_infra_info_subnets: "{{
+        [{aws_get_infra_info_item.0: aws_get_infra_info_item.1}] |
+        combine(aws_get_infra_info_subnets | default([]))
+      }}"
+  with_together:
+    - "{{ agii_subnet_id_info_mod }}"
+    - "{{ agii_subnet_id_info.subnets }}"
+  loop_control:
+    loop_var: aws_get_infra_info_item

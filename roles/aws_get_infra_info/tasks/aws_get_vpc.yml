@@ -1,0 +1,15 @@
+---
+- name: Get vpc id
+  delegate_to: localhost
+  amazon.aws.ec2_vpc_net_info:
+    filters:
+      tag:Name: "{{ demo_name }}"
+    aws_access_key: "{{ my_aws_access_key }}" # extra_vars override from AAP
+    aws_secret_key: "{{ my_aws_secret_key }}" # extra_vars override from AAP
+    region: "{{ demo_region }}" # extra_vars will override from AAP Credential
+  register: vpc_id_info
+
+- name: Set aws_info.vpc_id fact
+  ansible.builtin.set_fact:
+    aws_info:
+      vpc_id: "{{ vpc_id_info.vpcs[0].vpc_id }}"

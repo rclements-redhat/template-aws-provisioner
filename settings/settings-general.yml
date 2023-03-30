@@ -1,0 +1,5 @@
+my_personal_ip: 173.34.141.140/32
+
+url:
+  https:
+    find_public_ip: https://ifconfig.me/ip

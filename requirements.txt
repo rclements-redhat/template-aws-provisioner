@@ -2,4 +2,6 @@ ansible
 ansible-lint
 botocore
 boto3
-jmespath
+jmespath # jsonqueries
+dnspython # for dig lookups
+ansible-utils # for ansible.utils.ipv4

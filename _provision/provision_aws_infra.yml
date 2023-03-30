@@ -1,11 +1,15 @@
+#############################################################################
+# Author: Ryan Clements, Red Hat Inc.
+# Email: rclement@redhat.com
+# Date: March 29/2023
+#############################################################################
 ---
-# OK
-- name: Provision AWS infrastructure and EC2 webservers
+- name: Provision AWS infrastructure [No EC2]
   hosts: localhost
   vars_files:
     - ../secrets/aws_secrets.yml
     - ../settings/settings-general.yml
-    - ../settings/settings-aws.yml # All non-account specific configurable settings
+    - ../settings/settings-aws.yml
   vars:
     # USE --> settings.yml <-- to configure custom variables
     # DO NOT TOUCH anything below as there isn't really anything
@@ -13,137 +17,218 @@
     aws_ref: &aws_ref
       aws_access_key: "{{ my_aws_access_key }}" # extra_vars override from AAP
       aws_secret_key: "{{ my_aws_secret_key }}" # extra_vars override from AAP
-      region: "{{ demo_region }}" # extra_vars override from AAP Credential
+      region: "{{ aws.region[0].name }}" # extra_vars override from AAP Credential
+
+    use_personal_ip_for_sg: "{{ use_personal_ip_for_sg | default(true) }}"
 
 ###  Main tasks ###
 
   tasks:
-    - name: Create VPC if does not exist
-      when: aws_preexisting_vpc_id is not defined
+
+    # If aws or region isn't defined, just error out
+    - name: Check for aws and region objects
+      ansible.builtin.assert:
+        that:
+          - aws is defined
+          - aws.region is defined
+
+    # Should we use the personal IP of the operator to secure ingress
+    # on the security groups? ../settings/settings-aws.yml
+    # returns: personal_ip_info.ip
+    - name: Use personal IP for SGs?
+      when: use_personal_ip_for_sg | default(true)
+      ansible.builtin.include_role:
+        name: ../roles/personal_ip_info # noqa role-name[path]
+
+    # Sets the _address_MY_IP_for_sgs fact that will be used to replace any
+    # _MY_IP_ tags in the security group list.
+    # If [use_personal_ip_for_sg] is [false] and
+    #    [alternative_security_ip] is defined and
+    #    [alternative_security_ip] is a valid network address
+    # then use [alternative_security_ip] instead of the personal IP address
+    # returned in personal_ip_info.ip by the personal_ip_info role above.
+    - name: Check if alternative_security_ip should be used
+      ansible.builtin.set_fact:
+        _address_my_ip_for_sgs: "{{
+            ((not use_personal_ip_for_sg | default(true)) and
+            (alternative_security_ip is defined) and
+            (alternative_security_ip is ansible.utils.ipv4) |
+            ternary(alternative_security_ip, personal_ip_info.ip))
+          }}"
+
+    - name: Set region fact
+      ansible.builtin.set_fact:
+        _region: "{{ aws.region[0] }}"
+      when: aws.region | default(omit) is defined
+
+    - name: Create VPC
       delegate_to: localhost
+      when: _region.vpc | default(omit) is defined
       block:
+        - name: Set _vpc
+          ansible.builtin.set_fact:
+            _vpc: "{{ _region.vpc }}"
+
         - name: Create VPC
+          when: _region.vpc | default(omit) is defined
           amazon.aws.ec2_vpc_net:
-            name: "{{ demo_name }}"
-            cidr_block: "{{ aws.vpc.cidr_block }}"
-            tenancy: dedicated
-            tags: "{{ aws.vpc.tags }}"
+            name: "{{ _vpc.name }}"
+            cidr_block: "{{ _vpc.cidr_block | default(omit) }}"
+            tenancy: "{{ _vpc.tenancy | default(omit) }}"
+            tags: "{{ _vpc.tags | default(omit) }}"
             <<: *aws_ref
-          register: vpc_result
-        - name: Set vpc_id
-          ansible.builtin.set_fact:
-            vpc_id: "{{ vpc_result.vpc.id }}"
+          register: _vpc_result
 
-    - name: Create internal subnet if does not exist
-      when: aws_preexisting_subnet_internal_id is not defined
-      delegate_to: localhost
-      block:
-        - name: Create internal subnet for VPC
-          amazon.aws.ec2_vpc_subnet:
-            state: present
-            vpc_id: "{{ vpc_id }}"
-            cidr: "{{ aws.subnets.internal.network_cidr }}"
-            tags: "{{ aws.subnets.internal.tags }}"
-            <<: *aws_ref
-          register: subnet_result
-        - name: Set int_subnet_id
+        - name: Set _vpc_id
           ansible.builtin.set_fact:
-            int_subnet_id: "{{ subnet_result.subnet.id }}"
+            _vpc_id: "{{ _vpc_result.vpc.id }}"
 
-    - name: Create external subnet if does not exist
-      when: aws_preexisting_subnet_external_id is not defined
-      delegate_to: localhost
-      block:
-        - name: Create external subnet for VPC
-          amazon.aws.ec2_vpc_subnet:
-            state: present
-            vpc_id: "{{ vpc_id }}"
-            cidr: "{{ aws.subnets.external.network_cidr }}"
-            tags: "{{ aws.subnets.external.tags }}"
-            <<: *aws_ref
-          register: subnet_result
-        - name: Set ext_subnet_id
-          ansible.builtin.set_fact:
-            ext_subnet_id: "{{ subnet_result.subnet.id }}"
+        - name: Create VPC subnets for VPC
+          delegate_to: localhost
+          when: _vpc.subnet | default(omit) is defined
+          block:
+            - name: Set _subnet
+              ansible.builtin.set_fact:
+                _subnet: "{{ _vpc.subnet[0] | default(omit) }}"
 
-    - name: Create management subnet if does not exist
-      when: aws_preexisting_subnet_management_id is not defined
-      delegate_to: localhost
-      block:
-        - name: Create management subnet for VPC
-          amazon.aws.ec2_vpc_subnet:
-            state: present
-            vpc_id: "{{ vpc_id }}"
-            cidr: "{{ aws.subnets.management.network_cidr }}"
-            tags: "{{ aws.subnets.management.tags }}"
-            <<: *aws_ref
-          register: subnet_result
-        - name: Set mgmt_subnet_id
-          ansible.builtin.set_fact:
-            mgmt_subnet_id: "{{ subnet_result.subnet.id }}"
+            - name: Create subnet for VPC
+              amazon.aws.ec2_vpc_subnet:
+                state: present
+                vpc_id: "{{ _vpc_id }}"
+                cidr: "{{ _subnet.cidr }}"
+                tags: "{{ _subnet.tags | default(omit) }}"
+                <<: *aws_ref
+              register: _subnet_result
 
-    - name: Create sg for management subnet if does not exist
-      when: aws_preexisting_sg_management_id is not defined
-      delegate_to: localhost
-      block:
-        - name: Create sg for management subnet # noqa args[module]
-          amazon.aws.ec2_security_group:
-            name: "{{ aws.security_groups.management.tags.Name }}"
-            description: "{{ demo_name }} {{ management_string }} sg"
-            vpc_id: "{{ vpc_id }}"
-            rules: "{{ aws.security_groups.management.rules }}"
-            tags: "{{ aws.security_groups.management.tags }}"
-            <<: *aws_ref
-          register: sg_result
-        - name: Set mgmt_sg_id fact
-          ansible.builtin.set_fact:
-            mgmt_sg_id: "{{ sg_result.group_id }}"
+            - name: Set _subnet_id
+              ansible.builtin.set_fact:
+                _subnet_id: "{{ _subnet_result.subnet.id }}"
 
-    - name: Create sg for internal subnet if does not exist
-      when: aws_preexisting_sg_internal_id is not defined
-      delegate_to: localhost
-      block:
-        - name: Create sg for internal subnet # noqa args[module]
-          amazon.aws.ec2_security_group:
-            name: "{{ aws.security_groups.internal.tags.Name }}"
-            description: "{{ demo_name }} {{ internal_string }} sg"
-            vpc_id: "{{ vpc_id }}"
-            rules: "{{ aws.security_groups.internal.rules }}"
-            tags: "{{ aws.security_groups.internal.tags }}"
-            <<: *aws_ref
-          register: sg_result
-        - name: Set int_sg_id fact
-          ansible.builtin.set_fact:
-            int_sg_id: "{{ sg_result.group_id }}"
+            - name: Set _rtb
+              ansible.builtin.set_fact:
+                _rtb: "{{ _subnet.rtb[0] | default(omit) }}"
 
-    - name: Create internet gateway if does not exist
-      when: aws_preexisting_internet_gateway_id is not defined
-      delegate_to: localhost
-      block:
-        - name: Create internet gateway
-          amazon.aws.ec2_vpc_igw:
-            vpc_id: "{{ vpc_id }}"
-            state: present
-            tags: "{{ aws.igw.tags }}"
-            <<: *aws_ref
-          register: igw_result
-        - name: Set internet_gateway_id fact
-          ansible.builtin.set_fact:
-            internet_gateway_id: "{{ igw_result.gateway_id }}"
+            - name: Enter route table object
+              when: _rtb | default(omit) is defined
+              block:
+                - name: Set _igw
+                  ansible.builtin.set_fact:
+                    _igw: "{{ _rtb.igw | default(omit) }}"
 
-    - name: Create route table if does not exist
-      when: aws_preexisting_route_table_id is not defined
-      delegate_to: localhost
-      block:
-        - name: Create route table  # noqa args[module]
-          amazon.aws.ec2_vpc_route_table:
-            vpc_id: "{{ vpc_id }}"
-            subnets:
-              - "{{ mgmt_subnet_id }}"
-              - "{{ int_subnet_id }}"
-              - "{{ ext_subnet_id }}"
-            routes: "{{ aws.route_table.routes }}"
-            gateway_id: "{{ internet_gateway_id }}"
-            tags: "{{ aws.route_table.tags }}"
-            <<: *aws_ref
-          register: rt_result
+                - name: Create internet gateway
+                  delegate_to: localhost
+                  when: _rtb.igw | default(omit) is defined
+                  amazon.aws.ec2_vpc_igw:
+                    vpc_id: "{{ _vpc_id }}"
+                    state: present
+                    tags: "{{ _igw.tags }}"
+                    <<: *aws_ref
+                  register: _igw_result
+
+                - name: Set internet_gateway_id fact
+                  ansible.builtin.set_fact:
+                    _igw_id: "{{ _igw_result.gateway_id }}"
+
+                # - name: Create route table for subnet
+                #   delegate_to: localhost
+                #   when: _rtb | default(omit) is defined
+                #   block:
+                #     - name: Create route table  # noqa args[module]
+                #       amazon.aws.ec2_vpc_route_table:
+                #         vpc_id: "{{ _vpc_id }}"
+                #         subnets: "{{ _rtb.subnets | default(omit) }}"
+                #         routes: "{{ _rtb.routes | default([]) }}"
+                #         gateway_id: "{{ _igw_id | default(omit) }}"
+                #         tags: "{{ _rtb.tags | default(omit) }}"
+                #         <<: *aws_ref
+                #       register: _rtb_result
+
+                - name: Set _sg
+                  ansible.builtin.set_fact:
+                    _sg: "{{ _subnet.sg[0] | default(omit) }}"
+
+                # This crazy ball of Jinja2 filters takes the rule list of the
+                # security group and replaces any cidr_ip keys that have a value
+                # of _MY_IP_.
+                #
+                # The original rule list looks something like this:
+                #
+                # "_sg": {
+                #     "description": "Internal security group",
+                #     "ec2": null,
+                #     "name": "internal",
+                #     "rules": [
+                #         {
+                #             "cidr_ip": "_MY_IP_",
+                #             "ports": 22,
+                #             "proto": "tcp"
+                #         },
+                #         {
+                #             "cidr_ip": "1.1.1.1/32",
+                #             "ports": 443,
+                #             "proto": "tcp"
+                #         }
+                #      ],
+                #
+                # To replace _MY_IP_, this is what happens:
+                #
+                # - loops over each as an _sg.rule as an item
+                # - The combine filter creates a new dictoinary { } with
+                #   cidr_ip: item.cidr_ip, but it runs a replace on anything
+                #   that contains _MY_IP_ in the cidr_ip value and replaces it
+                #   with the personal ip of the user.
+                # - Lastly it adds the list encapsulating the dict to the _rules
+                #   dict before moving on to the next rule.
+                #
+                # I weirdly spaced it below because it's important to see how it
+                # all goes together.
+                #
+                # - The [ ]'s start a new list, which can be added with +
+                # - The { }'s start a new dict, which use combine
+                #
+                # Why does Ansible need to be so difficult for simple string
+                # manipulation?
+                #
+                - name: Parse routes
+                  ansible.builtin.set_fact: # noqa jinja[spacing]
+                    __p__rules: "{{ [
+                                      item | default({}) |
+                                      combine( [{ 'cidr_ip': item.cidr_ip | replace('_MY_IP_', personal_ip_info.ip+'/32') }] )
+                                    ]
+                        + __p__rules | default([])
+                      }}"
+
+                  with_items: "{{ _sg.rules }}"
+
+                # After all that mess, the end result is this:
+                #
+                #     "rules": [
+                #         {
+                #             "cidr_ip": "Whatever value is in personal_ip_info.ip/32",
+                #             "ports": 22,
+                #             "proto": "tcp"
+                #         },
+                #         {
+                #             "cidr_ip": "1.1.1.1/32",
+                #             "ports": 443,
+                #             "proto": "tcp"
+                #         }
+                #      ],
+
+                - name: Create security groups
+                  when: _sg | default(omit) is defined
+                  delegate_to: localhost
+                  block:
+                    - name: Create security group for submit # noqa args[module]
+                      amazon.aws.ec2_security_group:
+                        name: "{{ _sg.name }}"
+                        description: "{{ _sg.description }}"
+                        vpc_id: "{{ _vpc_id }}"
+                        # get that new parsed list in the rules
+                        rules: "{{ __p__rules }}"
+                        tags: "{{ _sg.tags }}"
+                        <<: *aws_ref
+                      register: _sg_result
+                    - name: Set _sg_id fact
+                      ansible.builtin.set_fact:
+                        _sg_id: "{{ _sg_result.group_id }}"

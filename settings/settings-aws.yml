@@ -27,7 +27,7 @@ use_personal_ip_for_sg: "{{ true | mandatory }}"
 # WHY?
 #   The reason this exists is to quickly change the "_MY_IP_" IP address for
 #   testing, but not have to go edit all the route tables below.
-alternative_security_ip: "{{ default(omit) }}"
+alternative_security_ip: "0.0.0.0/0"
 
 # Define the AWS infrastructure you want to build, using YAML. The provisioner
 # will do the rest.

@@ -9,7 +9,7 @@
 - name: Set personal public IP fact
   ansible.builtin.set_fact:
     personal_ip_info:
-      ip: "{{ my_ip_info.content }}"
+      ip: "{{ my_ip_info.content }}{{ cidr_format | ternary('/32', '') }}"
 
 - name: Display personal public IP
   ansible.builtin.debug:

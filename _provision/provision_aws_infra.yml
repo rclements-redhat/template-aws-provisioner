@@ -40,21 +40,46 @@
       ansible.builtin.include_role:
         name: ../roles/personal_ip_info # noqa role-name[path]
 
-    # Sets the _address_MY_IP_for_sgs fact that will be used to replace any
-    # _MY_IP_ tags in the security group list.
+    # Sets the _use_alternative_ip_for_sgs boolean fact.
+    #
+    # If true:
+    #   - It will configure [_address_my_ip_for_sgs] to use the script
+    #     operator's IP.
+    #
+    # If false:
+    #   - Then [_address_my_ip_for_sgs] will use the fact from
+    #     [alternative_security_ip] if it's set.
+    #
+    # The logic works like this:
+    #
     # If [use_personal_ip_for_sg] is [false] and
     #    [alternative_security_ip] is defined and
     #    [alternative_security_ip] is a valid network address
-    # then use [alternative_security_ip] instead of the personal IP address
-    # returned in personal_ip_info.ip by the personal_ip_info role above.
+    #
+    # Then:
+    #
+    #    use [alternative_security_ip] instead of the personal IP address
+    #    returned in personal_ip_info.ip by the personal_ip_info role above.
     - name: Check if alternative_security_ip should be used
       ansible.builtin.set_fact:
-        _address_my_ip_for_sgs: "{{
-            ((not use_personal_ip_for_sg | default(true)) and
+        _use_alternative_ip_for_sgs: "{{
+            (not use_personal_ip_for_sg | default(true)) and
             (alternative_security_ip is defined) and
-            (alternative_security_ip is ansible.utils.ipv4) |
-            ternary(alternative_security_ip, personal_ip_info.ip))
+            (alternative_security_ip is ansible.utils.ipv4)
           }}"
+    # Now set the IP depending on the above logic
+    - name: Set IP address to use for _MY_IP_ replacements in security groups
+      ansible.builtin.set_fact:
+        _address_my_ip_for_sgs: "{{
+            _use_alternative_ip_for_sgs |
+            ternary(alternative_security_ip, personal_ip_info.ip)
+          }}"
+
+    - name: Write IP that will be used as _MY_IP_ in SGs to debug logs
+      ansible.builtin.debug:
+        msg: >
+          Provisioner will use {{ _address_my_ip_for_sgs }} to replace any
+          _MY_IP_ tags in the security groups.
 
     - name: Set region fact
       ansible.builtin.set_fact:
@@ -193,7 +218,9 @@
                   ansible.builtin.set_fact: # noqa jinja[spacing]
                     __p__rules: "{{ [
                                       item | default({}) |
-                                      combine( [{ 'cidr_ip': item.cidr_ip | replace('_MY_IP_', personal_ip_info.ip+'/32') }] )
+                                      combine( [{ 'cidr_ip': item.cidr_ip |
+                                      replace('_MY_IP_',
+                                        _address_my_ip_for_sgs) }] )
                                     ]
                         + __p__rules | default([])
                       }}"
